@@ -1,0 +1,6 @@
+*.vcd
+*.pyc
+*.swp
+__pycache__
+build
+.venv
