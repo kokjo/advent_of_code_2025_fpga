@@ -3,6 +3,7 @@ from amaranth.lib.cdc import FFSynchronizer
 from stream import Stream
 
 class UartRx(Elaboratable):
+    """Basic UART RX module"""
     def __init__(self, rx, clkdiv_width = 16, clkdiv_reset = int(12e6 / 9600)-1):
         self.clkdiv = Signal(clkdiv_width, reset=clkdiv_reset)
         self.rx = rx
@@ -57,6 +58,7 @@ class UartRx(Elaboratable):
         return m
 
 class UartTx(Elaboratable):
+    """Basic UART TX module"""
     def __init__(self, tx, clkdiv_width=16, clkdiv_reset = int(12e6 / 9600)-1):
         self.clkdiv = Signal(clkdiv_width, reset=clkdiv_reset)
         self.tx = tx
@@ -93,6 +95,23 @@ class UartTx(Elaboratable):
 
         m.d.comb += self.tx.eq(pattern[0])
         
+        return m
+
+class UartWrapper(Elaboratable):
+    """ Simple UART wrapper for running on actual hardware"""
+    def __init__(self, inner):
+        self.inner = inner
+
+    def elaborate(self, platform):
+        m = Module()
+        uart = platform.request("uart")
+        m.submodules.uart_rx = uart_rx = UartRx(uart.rx.i)
+        m.submodules.uart_tx = uart_tx = UartTx(uart.tx.o)
+        m.submodules.inner = inner = self.inner
+        m.d.comb += [
+            uart_rx.o.connect(inner.i),
+            inner.o.connect(uart_tx.i),
+        ]
         return m
 
 class TestDesign(Elaboratable):
