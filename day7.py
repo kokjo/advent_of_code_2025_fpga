@@ -3,21 +3,22 @@ from amaranth.sim import *
 from amaranth.lib.data import Struct, Enum
 from amaranth.lib.memory import Memory, MemoryData
 from amaranth_boards.ice40_hx8k_b_evn import ICE40HX8KBEVNPlatform
-from stream import Stream, HexConverter, read_stream, write_stream
-from uart import UartWrapper
+from utils import Stream, Harness, UartWrapper, read_stream, write_stream
+from argparse import ArgumentParser, FileType
 
 class PipelineRegister(Struct):
+    ""
     en: 1
     addr: 8
     data: 64
 
-class Solver(Elaboratable):
+class Solution(Elaboratable):
     def __init__(self):
         self.i = Stream(8)
         self.done = Signal()
         self.error = Signal()
-        self.splits = Signal(64)
-        self.timelines = Signal(64)
+        self.part_1 = Signal(64)
+        self.part_2 = Signal(64)
     
     def elaborate(self, platform):
         m = Module()
@@ -25,7 +26,7 @@ class Solver(Elaboratable):
         # Current sum of timelines per line
         sum = Signal(64)
 
-        # Memory for timeline/beam data, contains two sections of 256 words.
+        # Memory for timeline/beam data
         m.submodules.mem = mem = Memory(shape=64, depth=256, init=[0] * 256)
         rdport = mem.read_port()
         wrport = mem.write_port(domain = "sync")
@@ -35,9 +36,8 @@ class Solver(Elaboratable):
 
         # Our window of timelines,
         # We have a sliding window of 3 timelines counters this is enough as
-        # spliting is a local change which only modifies at most 2 values over a distance of 3.
+        # spliting is a local change which only modifies 3 values(previous, current and next)
         # We need to keep the index of each timeline as well for when we are wrapping back to 0.
-
         pipeline = [Signal(PipelineRegister, name=f"pipeline_{i}") for i in range(3)]
 
         rdport_delay = [Signal(name=f"rdport_deplay_{i}") for i in range(2)]
@@ -101,7 +101,7 @@ class Solver(Elaboratable):
                         with m.Case(ord('^')): # Split
                             # Part 1: Count splits
                             with m.If(rdport.data != 0):
-                                m.d.sync += self.splits.eq(self.splits + 1)
+                                m.d.sync += self.part_1.eq(self.part_1 + 1)
                             # Split timelines
                             m.d.sync += [
                                 pipeline[0].data.eq(rdport.data + pipeline[1].data),
@@ -122,7 +122,7 @@ class Solver(Elaboratable):
                                     m.next = "DONE"
                                 with m.Else():
                                     m.d.sync += [
-                                        self.timelines.eq(sum),
+                                        self.part_2.eq(sum),
                                         sum.eq(0)
                                     ]
                         with m.Default():
@@ -139,48 +139,8 @@ class Solver(Elaboratable):
 
         return m
 
-class Solution(Elaboratable):
-    def __init__(self):
-        self.i = Stream(8)
-        self.o = Stream(8)
-    
-    def elaborate(self, platform):
-        m = Module()
-        reset = Signal()
-        m.submodules.solver = solver = ResetInserter(reset)(Solver())
-        m.submodules.hexout = hexout = HexConverter()
-
-        m.d.comb += self.i.connect(solver.i)
-        m.d.comb += hexout.o.connect(self.o)
-
-        # Handshake
-        with m.If(hexout.i.ready):
-            m.d.sync += hexout.i.valid.eq(0)
-
-        with m.FSM("RUNNING"):
-            with m.State("RUNNING"):
-                with m.If(solver.done):
-                    m.next = "PRINT PART 1"
-            with m.State("PRINT PART 1"):
-                with m.If(~hexout.i.valid):
-                    m.d.sync += [
-                        hexout.i.valid.eq(1),
-                        hexout.i.data.eq(solver.splits)
-                    ]
-                    m.next = "PRINT PART 2"
-            with m.State("PRINT PART 2"):
-                with m.If(~hexout.i.valid):
-                    m.d.sync += [
-                        hexout.i.valid.eq(1),
-                        hexout.i.data.eq(solver.timelines)
-                    ]
-                    m.d.comb += reset.eq(1)
-                    m.next = "RUNNING"
-
-        return m 
-
 def cmd_test(args):
-    dut = Solution()
+    dut = Harness(Solution())
     sim = Simulator(dut)
     sim.add_clock(1e-6)
     sim.add_testbench(write_stream(args.data.read(), dut.i))
@@ -190,10 +150,9 @@ def cmd_test(args):
     print()
 
 def cmd_build(args):
-    ICE40HX8KBEVNPlatform().build(UartWrapper(Solution()), do_program=args.program)
+    ICE40HX8KBEVNPlatform().build(UartWrapper(Harness(Solution())), do_program=args.program)
 
-def parse_args():
-    from argparse import ArgumentParser, FileType
+def main():
     parser = ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
     build_parser = subparsers.add_parser("build")
@@ -202,12 +161,9 @@ def parse_args():
     test_parser = subparsers.add_parser("test")
     test_parser.set_defaults(func = cmd_test)
     test_parser.add_argument("--time", dest="time", type=float, default=1e-3)
-    test_parser.add_argument("--vcd", dest="vcd", default=None)
+    test_parser.add_argument("--vcd", dest="vcd", default="day7.vcd")
     test_parser.add_argument("--data", dest="data", default=None, type=FileType("rb"))
-    return parser.parse_args()
-
-def main():
-    args = parse_args()
+    args = parser.parse_args()
     return args.func(args)
 
 if __name__ == "__main__": main()

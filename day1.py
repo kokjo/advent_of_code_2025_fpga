@@ -1,8 +1,7 @@
 from amaranth import *
 from amaranth.sim import *
 from amaranth_boards.ice40_hx8k_b_evn import ICE40HX8KBEVNPlatform
-from stream import Stream, HexConverter, read_stream, write_stream
-from uart import UartWrapper
+from utils import Harness, Stream, UartWrapper, HexConverter, read_stream, write_stream
 
 class Parser(Elaboratable):
     """Parser for day 1"""
@@ -83,8 +82,8 @@ class Dail(Elaboratable):
         self.i = Stream(16)
         self.busy = Signal()
         self.dail = Signal(8, init=50)
-        self.part_1_clicks = Signal(16)
-        self.part_2_clicks = Signal(16)
+        self.part_1 = Signal(16)
+        self.part_2 = Signal(16)
 
     def elaborate(self, platform):
         m = Module()
@@ -118,11 +117,11 @@ class Dail(Elaboratable):
         # Part 1: Check if next dail position is 0 AND this is the last step in the current rotation
         # The check (tmp == 0) & (self.dail == 0) will not work as we can be stuck at tmp == 0 for many cycles while waiting for input
         with m.If(((tmp == 1) & (self.dail == 99)) | ((tmp == -1) & (self.dail == 1))):
-            m.d.sync += self.part_1_clicks.eq(self.part_1_clicks + 1)
+            m.d.sync += self.part_1.eq(self.part_1 + 1)
 
         # Part 2: Check if next dail position is 0 AND the dail is still rotating
         with m.If((tmp != 0) & (self.dail == 0)):
-            m.d.sync += self.part_2_clicks.eq(self.part_2_clicks + 1)
+            m.d.sync += self.part_2.eq(self.part_2 + 1)
                     
         m.d.comb += self.busy.eq(tmp != 0)
         return m
@@ -130,64 +129,41 @@ class Dail(Elaboratable):
 class Solution(Elaboratable):
     def __init__(self):
         self.i = Stream(8)
-        self.o = Stream(8)
+        self.done = Signal()
+        self.error = Signal()
+        self.part_1 = Signal(64)
+        self.part_2 = Signal(64)
 
     def elaborate(self, platform):
         m = Module()
-        reset = Signal()
-        # Great feature of Amaranth here: Transforms
-        # ResetInserter: rewrite a whole module(Parser and Dail) to use a reset signal
-        # Amaranth also have a EnableInserter, which controls if the circut is running/enabled based on external signal.
-        # These transforms makes it possible to yank that kind of logic from modules and control it externally
-        m.submodules.parser = parser = ResetInserter(reset)(Parser())
-        m.submodules.dail = dail = ResetInserter(reset)(Dail())
-        m.submodules.hexout = hexout = HexConverter()
+
+        m.submodules.parser = parser = Parser()
+        m.submodules.dail = dail = Dail()
 
         # Just chain the input/output interfaces of our modules together.
         m.d.comb += [
             self.i.connect(parser.i),
             parser.o.connect(dail.i),
-            hexout.o.connect(self.o),
+            self.done.eq(parser.done & ~dail.busy),
+            self.error.eq(parser.error),
+            self.part_1.eq(dail.part_1),
+            self.part_2.eq(dail.part_2)
         ]
 
-        # Handshake
-        with m.If(hexout.i.ready):
-            m.d.sync += hexout.i.valid.eq(0)
-
-        with m.FSM("RUNNING"):
-            with m.State("RUNNING"):
-                with m.If(self.parser.done & ~dail.busy):
-                    m.next = "PRINT PART 1"
-            with m.State("PRINT PART 1"):
-                with m.If(~hexout.i.valid):
-                    m.d.sync += [
-                        hexout.i.valid.eq(1),
-                        hexout.i.data.eq(dail.part_1_clicks),
-                    ]
-                    m.next = "PRINT PART 2"
-            with m.State("PRINT PART 2"):
-                with m.If(~hexout.i.valid):
-                    m.d.sync += [
-                        hexout.i.valid.eq(1),
-                        hexout.i.data.eq(dail.part_2_clicks),
-                    ]
-                    m.d.comb += reset.eq(1)
-                    m.next = "RUNNING"
-            
         return m
 
 def cmd_test(args):
-    dut = Solution()
+    dut = Harness(Solution())
     sim = Simulator(dut)
     sim.add_clock(1e-6)
     sim.add_testbench(write_stream(args.data.read(), dut.i))
     sim.add_testbench(read_stream(dut.o))
     with sim.write_vcd(args.vcd):
-        sim.run_until(1, run_passive=True)
+        sim.run_until(args.time, run_passive=True)
     print()
 
 def cmd_build(args):
-    ICE40HX8KBEVNPlatform().build(UartWrapper(Solution()), do_program=args.program)
+    ICE40HX8KBEVNPlatform().build(UartWrapper(Harness(Solution())), do_program=args.program)
 
 def parse_args():
     from argparse import ArgumentParser, FileType
@@ -198,7 +174,8 @@ def parse_args():
     build_parser.add_argument("--program", dest="program", default=False, action="store_true")
     test_parser = subparsers.add_parser("test")
     test_parser.set_defaults(func = cmd_test)
-    test_parser.add_argument("--vcd", dest="vcd", default=None)
+    test_parser.add_argument("--time", dest="time", type=float, default=1e-3)
+    test_parser.add_argument("--vcd", dest="vcd", default="day1.vcd")
     test_parser.add_argument("--data", dest="data", default=None, type=FileType("rb"))
     return parser.parse_args()
 

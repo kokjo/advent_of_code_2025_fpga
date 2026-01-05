@@ -1,6 +1,77 @@
 from amaranth import *
 from amaranth.lib.cdc import FFSynchronizer
-from stream import Stream
+from amaranth.hdl.rec import DIR_FANIN, DIR_FANOUT
+from amaranth.sim import SimulatorContext
+
+class Stream(Record):
+    def __init__(self, width=8, src_loc_at=0):
+        super().__init__([
+            ("valid", 1, DIR_FANOUT),
+            ("ready", 1, DIR_FANIN),
+            ("data", width, DIR_FANOUT)
+        ], src_loc_at=src_loc_at+1)
+
+class HexConverter(Elaboratable):
+    """ Simple Hex converter, accepts 64 bits of input, outputs 8 bit ascii characters"""
+    def __init__(self):
+        self.i = Stream(64)
+        self.o = Stream(8)
+
+    def elaborate(self, platform):
+        m = Module()
+        cnt = Signal(5)
+        tmp = Signal(64)
+
+        with m.If(self.o.ready):
+            m.d.sync += self.o.valid.eq(0),
+
+        with m.If(self.i.valid & (cnt == 0)):
+            m.d.comb += self.i.ready.eq(1)
+            m.d.sync += [
+                cnt.eq(16),
+                tmp.eq(self.i.data)
+            ]
+
+        with m.If(cnt != 0 & (self.o.ready | ~self.o.valid)):
+            digit = (tmp >> 60) & 0xf
+            with m.Switch(digit):
+                with m.Case(0, 1, 2, 3, 4, 5, 6, 7, 8, 9):
+                    m.d.sync += self.o.data.eq(ord('0') + digit)
+                with m.Case(10, 11, 12, 13, 14, 15):
+                    m.d.sync += self.o.data.eq(ord('a') + (digit - 10))
+            m.d.sync += [
+                self.o.valid.eq(1),
+                tmp.eq(tmp << 4),
+                cnt.eq(cnt - 1)
+            ]
+
+        return m
+
+
+import random
+
+def write_stream(data, stream):
+    async def process(ctx: SimulatorContext):
+        for i, byte in enumerate(data):
+            ctx.set(stream.valid, 1)
+            ctx.set(stream.data, byte)
+            while ctx.get(stream.ready) != 1:
+                await ctx.tick()
+            await ctx.tick()
+            for _ in range(random.randint(0, 3)):
+                ctx.set(stream.valid, 0)
+                await ctx.tick()
+        ctx.set(stream.valid, 0)
+    return process
+
+def read_stream(stream):
+    async def process(ctx: SimulatorContext):
+        ctx.set(stream.ready, 1)
+        while True:
+            if ctx.get(stream.valid):
+                print(chr(ctx.get(stream.data)), end="")
+            await ctx.tick()
+    return process
 
 class UartRx(Elaboratable):
     """Basic UART RX module"""
@@ -114,38 +185,46 @@ class UartWrapper(Elaboratable):
         ]
         return m
 
-class TestDesign(Elaboratable):
-    def __init__(self):
-        self.loopback = Signal()
-        self.uart_tx = UartTx(self.loopback, clkdiv_reset=16)
-        self.uart_rx = UartRx(self.loopback, clkdiv_reset=16)
-
+class Harness(Elaboratable):
+    def __init__(self, solution):
+        self.i = Stream(8)
+        self.o = Stream(8)
+        self.solution = solution
+    
     def elaborate(self, platform):
         m = Module()
-        m.submodules.uart_tx = uart_tx = self.uart_tx
-        m.submodules.uart_rx = uart_rx = self.uart_rx
-        
-        with m.If(uart_tx.i.ready):
-            m.d.sync += uart_tx.i.valid.eq(0)
 
-        cnt = Signal(8)
-        m.d.sync += cnt.eq(cnt - 1)
+        reset = Signal()
+        m.submodules.solution = solution = ResetInserter(reset)(self.solution)
+        m.submodules.hexout = hexout = HexConverter()
 
-        with m.If(cnt == 0):
-            m.d.comb += uart_rx.o.ready.eq(1)
-            with m.If(~uart_tx.i.valid):
-                m.d.sync += [
-                    uart_tx.i.valid.eq(1),
-                    uart_tx.i.data.eq(uart_tx.i.data + 1),
-                ]
+        m.d.comb += [
+            self.i.connect(solution.i),
+            hexout.o.connect(self.o)
+        ]
+
+        # Handshake for hexout
+        with m.If(hexout.i.ready):
+            m.d.sync += hexout.i.valid.eq(0)
+
+        with m.FSM("RUNNING"):
+            with m.State("RUNNING"):
+                with m.If(solution.done):
+                    m.next = "PRINT PART 1"
+            with m.State("PRINT PART 1"):
+                with m.If(~hexout.i.valid):
+                    m.d.sync += [
+                        hexout.i.valid.eq(1),
+                        hexout.i.data.eq(solution.part_1)
+                    ]
+                    m.next = "PRINT PART 2"
+            with m.State("PRINT PART 2"):
+                with m.If(~hexout.i.valid):
+                    m.d.sync += [
+                        hexout.i.valid.eq(1),
+                        hexout.i.data.eq(solution.part_2)
+                    ]
+                    m.d.comb += reset.eq(1)
+                    m.next = "RUNNING"
+
         return m
-
-if __name__ == '__main__':
-    from amaranth.sim import *
-    dut = TestDesign()
-    sim = Simulator(dut)
-    sim.add_clock(1e-6)
-    with sim.write_vcd("uart_tx.vcd"):
-        sim.run_until(1000e-6, run_passive=True)
-
-
