@@ -35,7 +35,7 @@ class Solution(Elaboratable):
         addr = Signal(8)
 
         # Our window of timelines,
-        # We have a sliding window of 3 timelines counters this is enough as
+        # We have a sliding window of 3 timelines counters, this is enough as
         # spliting is a local change which only modifies 3 values(previous, current and next)
         # We need to keep the index of each timeline as well for when we are wrapping back to 0.
         pipeline = [Signal(PipelineRegister, name=f"pipeline_{i}") for i in range(3)]
@@ -65,43 +65,59 @@ class Solution(Elaboratable):
             # Process a input a byte at a time.
             with m.State("INPUT"):
                 with m.If(self.i.valid & rdport_delay[0]):
-                    # Handshake input byte
-                    m.d.comb += self.i.ready.eq(1)
-                    # setup next read from memory
+                    # 1. Setup next read from memory
                     m.d.sync += [
                         rdport.addr.eq(rdport.addr + 1),
                         rdport_delay[0].eq(0),
                         rdport_delay[1].eq(1),
                     ]
-                    # Writeback the newly calculated timeline counter when sliding out of window buffer
+
+                    # 2. Writeback the newly calculated timeline counter when sliding out of window buffer
                     m.d.sync += [
                         wrport.en.eq(pipeline[0].en),
                         wrport.addr.eq(pipeline[0].addr),
                         wrport.data.eq(pipeline[0].data),
                     ]
 
+                    # 3. Shift the pipeline forward
                     m.d.sync += [
                         pipeline[0].eq(pipeline[1]),
                         pipeline[1].en.eq(1),
                         pipeline[1].addr.eq(rdport.addr),
+                        pipeline[1].data.eq(rdport.data + Mux(pipeline[2].en, pipeline[2].data, 0))
                         pipeline[2].en.eq(0),
                         pipeline[2].addr.eq(0),
                         pipeline[2].data.eq(0),
                     ]
 
-                    # Sum of the timelines for part 2
+                    # 4. Sum of the timelines for part 2
                     with m.If(pipeline[0].en):
                         m.d.sync += sum.eq(sum + pipeline[0].data)
 
+                    # 5. Handle input data
                     with m.Switch(self.i.data):
-                        with m.Case(ord('.')): # Nop
-                            m.d.sync += pipeline[1].data.eq(rdport.data + Mux(pipeline[2].en, pipeline[2].data, 0))
-                        with m.Case(ord("S")): # Beam start
+                        # 5a. Nop
+                        with m.Case(ord('.')):
+                            # As this can be handled in a single cycle, ack the input immediately
+                            m.d.comb += self.i.ready.eq(1)
+
+                        # 5b. Beam start
+                        with m.Case(ord("S")):
+                            # As this can be handled in a single cycle, ack the input immediately
+                            m.d.comb += self.i.ready.eq(1)
+
+                            # Change pipeline data for current timeline to 1
                             m.d.sync += pipeline[1].data.eq(1)
-                        with m.Case(ord('^')): # Split
+
+                        # 5c. Split
+                        with m.Case(ord('^')):
+                            # As this can be handled in a single cycle, ack the input immediately
+                            m.d.comb += self.i.ready.eq(1)
+
                             # Part 1: Count splits
                             with m.If(rdport.data != 0):
                                 m.d.sync += self.part_1.eq(self.part_1 + 1)
+
                             # Split timelines
                             m.d.sync += [
                                 pipeline[0].data.eq(rdport.data + pipeline[1].data),
@@ -109,29 +125,39 @@ class Solution(Elaboratable):
                                 pipeline[2].en.eq(1),
                                 pipeline[2].data.eq(rdport.data),
                             ]
-                        with m.Case(ord('\n')): # Newline
+
+                        # 5d. Newline
+                        with m.Case(ord('\n')):
+                            # Flush pipeline(2 cycles)
                             m.d.sync += pipeline[1].en.eq(0)
-                            with m.If(pipeline[0].en | pipeline[1].en):
-                                m.d.comb += self.i.ready.eq(0),
-                            with m.Else():
-                                m.d.sync += [
-                                    pipeline[1].en.eq(0),
-                                    rdport.addr.eq(0) # reset line
-                                ]
-                                with m.If(rdport.addr == 0): # Double newline: No more input, done!
+                            with m.If((pipeline[0].en == 0) & (pipeline[1].en == 0)):
+                                # Acknowledge input, when pipeline is flushed
+                                m.d.comb += self.i.ready.eq(1),
+
+                                # Reset memory report counter(move to beginning)
+                                m.d.sync += rdport.addr.eq(0)
+
+                                # Check for double newline, this is our exit condition.
+                                with m.If(rdport.addr == 0):
                                     m.next = "DONE"
                                 with m.Else():
+                                    # Part 2: Count timelines
                                     m.d.sync += [
                                         self.part_2.eq(sum),
                                         sum.eq(0)
                                     ]
+
+                        # 5. Default case, move FSM to ERROR state.
                         with m.Default():
                             m.next = "ERROR"
+
             with m.State("DONE"):
                 pass # Stuck, wait for reset
+
             with m.State("ERROR"):
                 pass # Stuck, wait for reset
 
+            # Expose status signals to harness
             m.d.comb += [
                 self.done.eq(fsm.ongoing("DONE")),
                 self.error.eq(fsm.ongoing("ERROR"))
