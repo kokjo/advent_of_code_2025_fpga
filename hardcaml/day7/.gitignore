@@ -1,0 +1,6 @@
+_build
+_opam
+*.install
+*.merlin
+bin/generate.exe
+bin/generate.bc
