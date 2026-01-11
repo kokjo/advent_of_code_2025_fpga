@@ -18,6 +18,7 @@ module O : sig
     ; solver_error : 'a
     ; part_1 : 'a
     ; part_2 : 'a
+    ; input_transfer_count : 'a
     } [@@deriving hardcaml]
 end
 

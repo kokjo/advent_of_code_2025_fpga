@@ -19,6 +19,7 @@ module O = struct
     ; solver_error : 'a
     ; part_1 : 'a [@bits 64]
     ; part_2 : 'a [@bits 64]
+    ; input_transfer_count : 'a [@bits 64]
     } [@@deriving hardcaml]
 end
 
@@ -66,8 +67,10 @@ let create _ ({clock ; reset;  input_valid ; input_data } : _ I.t ) : _ O.t =
     let pipeline_2_valid = Variable.reg spec ~width:1 in
     let pipeline_2_data = Variable.reg spec ~width:64 in
     let part_2_sum = Variable.reg spec ~width:64 in
+    let input_transfer_count = Variable.reg spec ~width:64 in
     compile 
-        [ rdport_valid <-- vdd
+        [ when_ (input_valid &: input_ready.value) [input_transfer_count <-- input_transfer_count.value +: one 64]
+        ; rdport_valid <-- vdd
         ; sm.switch
             (* Clear timeline memory on reset *)
             [ (Reset, 
@@ -123,9 +126,14 @@ let create _ ({clock ; reset;  input_valid ; input_data } : _ I.t ) : _ O.t =
                                 [ part_1 <-- part_1.value +: one 64]
                             ])
                         ; (Signal.of_char '\n', 
-                            [ part_2 <-- part_2_sum.value
-                            ; when_ (rdport_addr.value ==: zero 8)
-                                [ sm.set_next Done ]
+                            [ pipeline_1_valid <-- gnd
+                            ; when_ (pipeline_0_valid.value ==: gnd &: pipeline_1_valid.value ==: gnd)
+                                [ input_ready <-- vdd
+                                ; rdport_addr <-- zero 8
+                                ; if_ (rdport_addr.value ==: zero 8)
+                                    [ sm.set_next Done ]
+                                    [ part_2 <-- part_2_sum.value; part_2_sum <-- zero 64]
+                                ]
                             ])
                         ]
                     ]
@@ -140,6 +148,7 @@ let create _ ({clock ; reset;  input_valid ; input_data } : _ I.t ) : _ O.t =
     ; solver_error = solver_error.value
     ; part_1 = part_1.value
     ; part_2 = part_2.value
+    ; input_transfer_count = input_transfer_count.value
     }
 ;;
 
