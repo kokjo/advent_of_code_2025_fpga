@@ -93,7 +93,16 @@ This challenge has both been solved in Amaranth and Hardcaml
 
 Challenge discription summary
 -----------------------------
-TODO
+This is the challenge about beam splitters and timelines , in put data looks like:
+```
+.......S.......
+...............
+.......^.......
+...............
+......^.^......
+...............
+```
+Where `S` indicates a beam start, and a `^` indicates a split, the `.` are just for background/nops
 
 Implementation
 --------------
@@ -132,11 +141,34 @@ block
     Control --> Current
     Control --> Previous
 ```
+All this is wapped in a Harness and UartRx/Tx just like the implementation for Day 1.
 
 Testing / Validation
 --------------------
-TODO
+The following produces `day1.vcd` for the example data and shows what would have been output to the uart.
+
+```
+$ python day7.py test --data data/7_example --vcd day7.vcd --time 1e-2
+0000000000000015
+0000000000000028
+```
 
 Flashing and Programming on an FPGA
 -----------------------------------
-TODO
+```bash
+$ ./day1.py build --program # Put design on FPGA, FPGA board must be in SRAM programming mode.
+```
+
+The design can now be tested in the following way:
+```bash
+$ tio -b 9600 /dev/ttyUSB1 # Attach to serialport
+$ cat data/1_example > /dev/ttyUSB1 # run in different terminal
+```
+
+Hardcaml solution
+-----------------
+The hardcaml solution for Day 7 follows very closely to the Amaranth solution.
+
+My functional programming is a bit rusty but I have written SML and Haskell during university courses 8 years ago. So many things in Ocaml was quite familiar.
+
+Some of the design decisions i think is a bit off, especially the way the functions take input signal and return output signal, this makes is harder to write more modular functional blocks with interfaces composed of both input and output signals(eg. a AXI style ready-valid interface). But overall the language is pretty nice to write in compared to raw Verilog or VHDL.
