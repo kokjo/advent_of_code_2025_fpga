@@ -2,6 +2,7 @@ from amaranth import *
 from amaranth.lib.cdc import FFSynchronizer
 from amaranth.hdl.rec import DIR_FANIN, DIR_FANOUT
 from amaranth.sim import SimulatorContext
+from amaranth.build import ResourceError
 
 class Stream(Record):
     def __init__(self, width=8, src_loc_at=0):
@@ -28,11 +29,11 @@ class HexConverter(Elaboratable):
         with m.If(self.i.valid & (cnt == 0)):
             m.d.comb += self.i.ready.eq(1)
             m.d.sync += [
-                cnt.eq(16),
+                cnt.eq(18),
                 tmp.eq(self.i.data)
             ]
 
-        with m.If(cnt != 0 & (self.o.ready | ~self.o.valid)):
+        with m.If((cnt > 2) & ~self.o.valid):
             digit = (tmp >> 60) & 0xf
             with m.Switch(digit):
                 with m.Case(0, 1, 2, 3, 4, 5, 6, 7, 8, 9):
@@ -44,6 +45,19 @@ class HexConverter(Elaboratable):
                 tmp.eq(tmp << 4),
                 cnt.eq(cnt - 1)
             ]
+        with m.If((cnt == 2) & ~self.o.valid):
+            m.d.sync += [
+                self.o.valid.eq(1),
+                self.o.data.eq(ord('\r')),
+                cnt.eq(cnt - 1)
+            ]
+        with m.If((cnt == 1) & ~self.o.valid):
+            m.d.sync += [
+                self.o.valid.eq(1),
+                self.o.data.eq(ord('\n')),
+                cnt.eq(cnt - 1)
+            ]
+
 
         return m
 
@@ -58,9 +72,9 @@ def write_stream(data, stream):
             while ctx.get(stream.ready) != 1:
                 await ctx.tick()
             await ctx.tick()
-            for _ in range(random.randint(0, 3)):
-                ctx.set(stream.valid, 0)
-                await ctx.tick()
+            # for _ in range(random.randint(0, 3)):
+            #     ctx.set(stream.valid, 0)
+            #     await ctx.tick()
         ctx.set(stream.valid, 0)
     return process
 
@@ -168,6 +182,26 @@ class UartTx(Elaboratable):
         
         return m
 
+class Blinker(Elaboratable):
+    def __init__(self, pin, start=240000, limit=120000):
+        self.pin = pin
+        self.stb = Signal()
+    def elaborate(self, platform):
+        m = Module()
+
+        limit = int(platform.default_clk_frequency // 50)
+        start = limit * 4
+
+        count = Signal(24)
+        m.d.sync += self.pin.eq(count <= limit)
+        with m.If(count != 0):
+            m.d.sync += count.eq(count - 1)
+        with m.Else():
+            with m.If(self.stb):
+                m.d.sync += count.eq(start)
+
+        return m
+
 class UartWrapper(Elaboratable):
     """ Simple UART wrapper for running on actual hardware"""
     def __init__(self, inner):
@@ -175,6 +209,7 @@ class UartWrapper(Elaboratable):
 
     def elaborate(self, platform):
         m = Module()
+
         uart = platform.request("uart")
         m.submodules.uart_rx = uart_rx = UartRx(uart.rx.i)
         m.submodules.uart_tx = uart_tx = UartTx(uart.tx.o)
@@ -183,6 +218,24 @@ class UartWrapper(Elaboratable):
             uart_rx.o.connect(inner.i),
             inner.o.connect(uart_tx.i),
         ]
+
+        blinkies = [
+            uart_rx.o.valid & uart_rx.o.ready,  # TX transfers
+            uart_tx.i.valid & uart_tx.i.ready,  # RX transfers
+            self.inner.solution.done,           # Done
+            self.inner.solution.error,          # Error
+            1,                                  # Running
+        ]
+
+        for i, expr in enumerate(blinkies):
+            try:
+                led = platform.request("led", i)
+                blinker = Blinker(led.o)
+                m.submodules += blinker
+                m.d.comb += blinker.stb.eq(expr)
+            except ResourceError:
+                pass # No more leds, let it fail. leds are optional.
+
         return m
 
 class Harness(Elaboratable):
@@ -211,6 +264,8 @@ class Harness(Elaboratable):
             with m.State("RUNNING"):
                 with m.If(solution.done):
                     m.next = "PRINT PART 1"
+                with m.If(solution.error):
+                    m.next = "PRINT ERROR"
             with m.State("PRINT PART 1"):
                 with m.If(~hexout.i.valid):
                     m.d.sync += [
@@ -223,6 +278,14 @@ class Harness(Elaboratable):
                     m.d.sync += [
                         hexout.i.valid.eq(1),
                         hexout.i.data.eq(solution.part_2)
+                    ]
+                    m.d.comb += reset.eq(1)
+                    m.next = "RUNNING"
+            with m.State("PRINT ERROR"):
+                with m.If(~hexout.i.valid):
+                    m.d.sync += [
+                        hexout.i.valid.eq(1),
+                        hexout.i.data.eq(0xdeadbeefdeadbeef)
                     ]
                     m.d.comb += reset.eq(1)
                     m.next = "RUNNING"

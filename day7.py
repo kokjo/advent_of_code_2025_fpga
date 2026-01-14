@@ -84,7 +84,7 @@ class Solution(Elaboratable):
                         pipeline[0].eq(pipeline[1]),
                         pipeline[1].en.eq(1),
                         pipeline[1].addr.eq(rdport.addr),
-                        pipeline[1].data.eq(rdport.data + Mux(pipeline[2].en, pipeline[2].data, 0))
+                        pipeline[1].data.eq(rdport.data + Mux(pipeline[2].en, pipeline[2].data, 0)),
                         pipeline[2].en.eq(0),
                         pipeline[2].addr.eq(0),
                         pipeline[2].data.eq(0),
@@ -149,6 +149,7 @@ class Solution(Elaboratable):
 
                         # 5. Default case, move FSM to ERROR state.
                         with m.Default():
+                            m.d.comb += self.i.ready.eq(1)
                             m.next = "ERROR"
 
             with m.State("DONE"):
