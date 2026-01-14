@@ -107,17 +107,22 @@ let create _ ({clock ; reset;  input_valid ; input_data } : _ I.t ) : _ O.t =
                     ; pipeline_2_data <-- zero 64
                     ; when_ pipeline_0_valid.value 
                         [ part_2_sum <-- part_2_sum.value +: pipeline_0_data.value ]
+                    (* Setup default for switch case *)
+                    ; sm.set_next Error
                     (* Process challenge input bytes *)
                     ; switch input_data
                         [ (Signal.of_char '.',
-                            [ input_ready <-- vdd
+                            [ sm.set_next Input
+                            ; input_ready <-- vdd
                             ])
                         ; (Signal.of_char 'S',
-                            [ input_ready <-- vdd
+                            [ sm.set_next Input
+                            ; input_ready <-- vdd
                             ; pipeline_1_data <-- one 64
                             ])
                         ; (Signal.of_char '^', 
-                            [ input_ready <-- vdd
+                            [ sm.set_next Input
+                            ; input_ready <-- vdd
                             ; pipeline_0_data <-- pipeline_1_data.value +: rdport_data
                             ; pipeline_1_data <-- mux2 pipeline_2_valid.value pipeline_2_data.value (zero 64)
                             ; pipeline_2_valid <-- vdd
@@ -126,7 +131,8 @@ let create _ ({clock ; reset;  input_valid ; input_data } : _ I.t ) : _ O.t =
                                 [ part_1 <-- part_1.value +: one 64]
                             ])
                         ; (Signal.of_char '\n', 
-                            [ pipeline_1_valid <-- gnd
+                            [ sm.set_next Input
+                            ; pipeline_1_valid <-- gnd
                             ; when_ (pipeline_0_valid.value ==: gnd &: pipeline_1_valid.value ==: gnd)
                                 [ input_ready <-- vdd
                                 ; rdport_addr <-- zero 8
@@ -139,7 +145,10 @@ let create _ ({clock ; reset;  input_valid ; input_data } : _ I.t ) : _ O.t =
                     ]
             ])
             ; (Done, [solver_done <-- vdd])
-            ; (Error, [solver_error <-- vdd])
+            ; (Error,
+                [ input_ready <-- vdd
+                ; solver_error <-- vdd
+                ])
             ]
         ;
         ];
